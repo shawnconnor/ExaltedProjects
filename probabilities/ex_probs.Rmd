@@ -1,0 +1,179 @@
+---
+title: "Exalted Probability Study for Funsies"
+author: "Blackwell"
+output: rmarkdown::tufte_handout
+---
+
+# Introduction
+I'll be using this document to compiling my findings as I dig through the various probabilities associated with Exalted.
+
+# Die-Rolling Function
+\newthought{I found a neat R package} called __discreteRV__ that lets you work with custom discrete random variables. This is super handy because unlike most common probability distributions, the results of a die roll are discrete. So, I built a function that defines the sides of the die and the odds of seeing each side, based on inputs of target number, which numbers to double, which numbers get rerolled indefinitely and which ones get rerolled once.^[Future work here to account for reroll-and-keep-successes; this is more complicated because it can't be accounted for simply by changing the probability of each face appearing.] These all default to the Exalted standard: target number of 7, double 10, no rerolls. 
+
+```{r, message=FALSE}
+library(knitr)
+library(discreteRV)
+library(foreach)
+
+build_a_die <- function(tn = 7, doubles = c(10), reroll_all = NA, reroll_once = NA) {
+    face <- c(1:10)
+    result <- c(0,0,0,0,0,0,0,0,0,0)
+    odds <- c(0,0,0,0,0,0,0,0,0,0)
+    die <- data.frame(face, result, odds)
+    die[die$face >= tn,]$result <- 1
+    die[die$face %in% doubles,]$result <- 2
+    if (!is.na(reroll_all)) { die <- die[-reroll_all,] }
+  
+  die$odds <- 1/length(die$face)
+  if (!is.na(reroll_once)) {
+    die[die$face %in% reroll_once,]$odds <- 0
+    die$odds <- die$odds+(sum(die$face %in% reroll_once)/length(die$face)^2)
+    }
+  a_roll <- RV(die$result, die$odds)
+  return(a_roll)
+  }
+
+a_roll <- build_a_die()
+```
+```{r, echo=FALSE, fig.margin = TRUE, fig.cap = "Result Histogram, Single Die, Normal Conditions"}
+barplot(probs(a_roll), main = "", ylim = c(0.0,0.75))
+```
+
+# The Basics
+\newthought{Having rigorously defined a single die,} we can use __discreteRV::SofIID__ to calculate the probability of any given number of successes. This works because we defined "result" as the number of successes the face was worth, rather than the number on the face. The RV function took care of reducing our individual faces down to distinct results. A single die roll (our "a_roll" from above) looks like this:
+```{r, echo=FALSE}
+a_roll
+```
+A two-die pool is computed like this:
+```{r}
+SofIID(a_roll, 2)
+```
+
+Now that we have this random variable, it's trivial to compute the probabilty of succeeding at a given difficulty for a given number of dice. Lets build a function to create a table of sample dice pools against difficultes from 1 to 10.
+
+```{r message=FALSE, results='hide', echo=FALSE}
+probs_matrix <- function(die, diffs, pools, bonus_dice = 0, bonus_success = 0) {
+  built_matrix <- matrix(nrow = length(pools), ncol = length(diffs))
+  foreach(i = 1:length(pools)) %do% {
+    sum_probs <- data.frame(probs(SofIID(die, pools[[i]] + bonus_dice)))
+    colnames(sum_probs) <- c("probs")
+    sum_probs$results <- as.integer(dimnames(sum_probs)[[1]]) + bonus_success
+    foreach(j = 1:length(diffs)) %do% {
+      built_matrix[i,j] <- sum(sum_probs[sum_probs$results >= diffs[[j]],]$probs)
+    }  
+  }
+  colnames(built_matrix) <- paste0("Diff ", diffs)
+  rownames(built_matrix) <- paste0(pools,"d")
+  return(built_matrix)
+}
+
+basic_probs <- probs_matrix(die=a_roll, diffs=seq(1,10, by = 1), pools = seq(2,30, by = 2))
+```
+
+```{r results='asis', echo=FALSE}
+kable(normal_probs, digits=3, row.names=TRUE, caption="Odds of success with a standard die (target number 7, double 10s)")
+```
+
+This is a matrix of results rerolling 1s:
+```{r message=FALSE, results='hide'}
+rr1_die <- build_a_die(reroll_all = 1)
+
+rr1_probs <- probs_matrix(die=rr1_die, diffs=seq(1,10, by = 1), pools = seq(2,30, by = 2))
+```
+```{r results='asis', echo=FALSE}
+kable(rr1_probs, digits=3, row.names=TRUE, caption="Odds of success with indefinitely-rerolled 1s (target number 7, double 10s, reroll 1s)")
+```
+
+With two matrices, it's a simple matter to see the difference:
+
+```{r, echo = FALSE}
+basic_v_rr1 <- rr1_probs - basic_probs
+```
+```{r results='asis', echo=FALSE}
+kable(basic_v_rr1, digits=3, row.names=TRUE, caption="Absolute change in odds of rerolled 1s over baseline")
+```
+
+All of the results are positive, which makes sense because rerolling 1s is always going to give a better result than the base die (the zeros are simply negligible bonuses). When you're talking about static difficulty (rather than counting excess successes) it's often interesting to see this in context with the __relative__ difference; how much do my odds of success improve?
+```{r, echo=FALSE}
+basic_v_rr1_relative <- (rr1_probs - basic_probs)/basic_probs
+```
+```{r results='asis', echo=FALSE}
+kable(basic_v_rr1_relative, digits=3, row.names=TRUE, caption="% change in odds of success rerolled 1s over baseline")
+```
+
+And sometimes it's even more informative to flip the ratios around and looking at the way the odds of failure change:
+```{r, echo=FALSE}
+basic_v_rr1_relative_fail <- ((1-rr1_probs) - (1-basic_probs))/(1-basic_probs)
+```
+```{r results='asis', echo=FALSE}
+kable(basic_v_rr1_relative_fail, digits=3, row.names=TRUE, caption="% change in odds of failure rerolled 1s over baseline")
+```
+Here, all values are negative (or zero) because the chance of failure will always go down (or stay effectively unchanged)
+
+# Some Specific Questions
+\newthought{We now have all the tools} we need to start exploring.
+
+## Excellent Strike vs Melee Excellency
+After this post by Swooper:   http://forum.theonyxpath.com/forum/main-category/exalted/837333-interesting-numbers?p=841015#post841015
+
+The Solar Charm __Excellent Strike__ works like our example above of indefinite rerolls of 1s, but also gives an extra success on top of any which are rolled. Because it makes the odds of success (or double-success) slightly higher on every die, its relative value scales with the size of the attack dice pool when it is used. For the same cost (3m), __Melee Excellency__ adds three dice to the pool. This is extremely impactful when a pool is relatively small, but usually has diminishing returns as the underlying dice pool gets bigger and bigger. Which is better, then, depends on where the break-even point is located, somewhere between "no dice" (where the Excellency is most useful) and "arbitrarily many dice" (where the Excellent Strike is best).
+
+To start, let's imagine that we've got a pool of some specific size, and we're guaging which Charm is better based on our odds of hitting a particular difficulty (this isn't quite how combat works, but we'll get to that in a minute).
+
+```{r message=FALSE, results='hide'}
+meleeexcellency_probs <- probs_matrix(die=a_roll, diffs=seq(1,10, by = 1), pools = seq(2,30, by = 2), bonus_dice = 3)
+
+excellentstrike_probs <- probs_matrix(die=rr1_die, diffs=seq(1,10, by = 1), pools = seq(2,30, by = 2), bonus_success= 1)
+
+excellency_v_excellent <- (meleeexcellency_probs - excellentstrike_probs)
+```
+
+```{r results='asis', echo=FALSE}
+kable(excellency_v_excellent, digits=3, row.names=TRUE, caption="Absolute difference between odds of success, 3m Melee Excellency minus Excellent Strike")
+```
+
+Neat! This
+But wait! That's not quite the whole story. Attack rolls aren't just about hitting. Successes beyond the difficulty have value. How do these two Charms differ in that respect? We need a new function, this time for computing expected values rather than probabilities. This is a tad easier because with __discreteRV::E__, which computes expected values given a probability distribution.
+
+```{r message=FALSE, results='hide'}
+
+
+
+meleeexcellency_ev <- matrix(nrow = 15, ncol = 12)
+
+foreach(i=c(2,4,6,8,10,12,14,16,18,20,22,24,26,28,30)) %do% {
+  sum_probs <- data.frame(probs(SofIID(a_roll, i+3)))
+  colnames(sum_probs) <- c("probs")
+  sum_probs$results <- as.integer(dimnames(sum_probs)[[1]])
+  foreach(j=c(1,2,3,4,5,6,7,8,9,10,11,12)) %do% {
+    meleeexcellency_ev[i/2,j] <- sum(sum_probs[sum_probs$results >= j,]$probs*(sum_probs[sum_probs$results >= j,]$results-(j-1)))
+    }
+}
+
+colnames(meleeexcellency_ev) <- paste0("Def ", c(1,2,3,4,5,6,7,8,9,10,11,12))
+rownames(meleeexcellency_ev) <- paste0(c(2,4,6,8,10,12,14,16,18,20,22,24,26,28,30),"d")
+```
+
+```{r message=FALSE, results='hide', echo=FALSE}
+excellentstrike_ev <- matrix(nrow = 15, ncol = 12)
+
+foreach(i=c(2,4,6,8,10,12,14,16,18,20,22,24,26,28,30)) %do% {
+  sum_probs <- data.frame(probs(SofIID(rr1_die, i)))
+  colnames(sum_probs) <- c("probs")
+  sum_probs$results <- as.integer(dimnames(sum_probs)[[1]])+1
+  foreach(j=c(1,2,3,4,5,6,7,8,9,10,11,12)) %do% {
+    excellentstrike_ev[i/2,j] <- sum(sum_probs[sum_probs$results >= j,]$probs*(sum_probs[sum_probs$results >= j,]$results-(j-1)))
+    }
+}
+
+colnames(excellentstrike_ev) <- paste0("Def ", c(1,2,3,4,5,6,7,8,9,10,11,12))
+rownames(excellentstrike_ev) <- paste0(c(2,4,6,8,10,12,14,16,18,20,22,24,26,28,30),"d")
+```
+
+```{r, echo=FALSE}
+excellency_v_excellent_ev <- (meleeexcellency_ev - excellentstrike_ev)
+```
+```{r results='asis', echo=FALSE}
+kable(excellency_v_excellent_ev, digits=2, row.names=TRUE, caption="Absolute difference between expected extra successes, 3m Melee Excellency minus Excellent Strike")
+```
+
